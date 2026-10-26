@@ -458,19 +458,26 @@ def save_settings():
 
 def open_settings_gui(icon=None, item=None):
     """Open the Qt (PySide6) settings GUI only (no fallback)."""
-    base_dir = Path(__file__).parent
-    qt_script = base_dir / "qt_gui.py"
     try:
-        import importlib.util
-        pyside_spec = importlib.util.find_spec("PySide6")
-        if not qt_script.exists() or pyside_spec is None:
-            log_message("Qt GUI not available (qt_gui.py missing or PySide6 not installed)", "ERROR")
-            show_notification("Settings GUI unavailable: Install PySide6 to use the Qt Settings.", alert_level="warning")
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable, "--settings"], creationflags=creationflags)
+            log_message("Qt Settings GUI launched (frozen mode)", "INFO")
             return
 
-        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-        subprocess.Popen([sys.executable, str(qt_script)], creationflags=creationflags)
-        log_message("Qt Settings GUI launched", "INFO")
+        base_dir = Path(__file__).parent
+        launcher_script = base_dir / "app_launcher.py"
+        qt_script = base_dir / "qt_gui.py"
+
+        if launcher_script.exists():
+            subprocess.Popen([sys.executable, str(launcher_script), "--settings"], creationflags=creationflags)
+            log_message("Qt Settings GUI launched via launcher", "INFO")
+        elif qt_script.exists():
+            subprocess.Popen([sys.executable, str(qt_script)], creationflags=creationflags)
+            log_message("Qt Settings GUI launched via script", "INFO")
+        else:
+            log_message("Qt GUI not available (neither app_launcher.py nor qt_gui.py found)", "ERROR")
+            show_notification("Settings GUI unavailable: Script files not found.", alert_level="warning")
     except Exception as e:
         log_message(f"Error launching Qt settings GUI: {e}", "ERROR")
 
@@ -1393,17 +1400,11 @@ Modes:
     if args.settings:
         print("[BATTERY] HA Battery Monitor - Opening Settings GUI...")
         try:
-            from pathlib import Path
-            qt_path = Path(__file__).parent / "qt_gui.py"
-            if not qt_path.exists():
-                print(f"[ERROR] Error opening settings GUI: Qt GUI not found at {qt_path}")
-                sys.exit(1)
-            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-            proc = subprocess.Popen([sys.executable, str(qt_path)], creationflags=creationflags)
-            print("[SETTINGS] Settings GUI opened. Close the GUI window to exit.")
-            proc.wait()
+            import qt_gui
+            sys.exit(qt_gui.main())
         except KeyboardInterrupt:
             print("\n[DONE] Settings mode stopped by user.")
+            sys.exit(0)
         except Exception as e:
             print(f"[ERROR] Error opening settings GUI: {e}")
             sys.exit(1)

@@ -226,5 +226,49 @@ class TestCrossPlatformSupport(unittest.TestCase):
             self.assertTrue(mock_popen.called)
 
 
+class TestSettingsLaunch(unittest.TestCase):
+    """Test settings launch behavior across frozen and script environments."""
+
+    def test_open_settings_gui_frozen_mode(self):
+        from unittest.mock import patch
+        with patch.object(bm.sys, "frozen", True, create=True), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            bm.open_settings_gui()
+            self.assertTrue(mock_popen.called)
+            args, _ = mock_popen.call_args
+            cmd = args[0]
+            self.assertEqual(cmd, [bm.sys.executable, "--settings"])
+
+    def test_open_settings_gui_script_mode(self):
+        from unittest.mock import patch
+        with patch.object(bm.sys, "frozen", False, create=True), \
+             patch.object(bm.subprocess, "Popen") as mock_popen:
+            bm.open_settings_gui()
+            self.assertTrue(mock_popen.called)
+            args, _ = mock_popen.call_args
+            cmd = args[0]
+            self.assertEqual(cmd[0], bm.sys.executable)
+            self.assertEqual(cmd[-1], "--settings")
+
+    def test_qt_tray_open_settings_delegation(self):
+        from unittest.mock import patch, MagicMock
+        import qt_tray
+        mock_tray = MagicMock()
+        tray_instance = qt_tray.TrayApp.__new__(qt_tray.TrayApp)
+        tray_instance.tray = mock_tray
+        with patch.object(bm, "open_settings_gui") as mock_open:
+            tray_instance.open_settings()
+            mock_open.assert_called_once()
+
+    def test_qt_gui_theme_and_window_instantiation(self):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        import qt_gui
+        w = qt_gui.MainWindow()
+        self.assertIsNotNone(w)
+        self.assertEqual(w.windowTitle(), qt_gui.APP_TITLE)
+        w.close()
+
+
 if __name__ == '__main__':
     unittest.main()
