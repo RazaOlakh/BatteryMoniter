@@ -226,5 +226,33 @@ class TestCrossPlatformSupport(unittest.TestCase):
             self.assertTrue(mock_popen.called)
 
 
+class TestRateOfChangeAlerts(unittest.TestCase):
+    """Test Rate of Change (ROC) rapid discharge and false alarm suppression."""
+
+    def setUp(self):
+        bm.load_settings()
+
+    def test_default_settings_roc_safe(self):
+        settings = bm.load_settings()
+        self.assertFalse(settings.get("monitoring", {}).get("roc_alert_enabled", True))
+        self.assertGreaterEqual(settings.get("monitoring", {}).get("roc_rate_percent_per_min", 0), 1.5)
+        self.assertFalse(settings.get("audio", {}).get("enabled_by_level", {}).get("roc_warning", True))
+
+    def test_roc_audio_suppressed_by_default(self):
+        from unittest.mock import patch
+        bm.app_settings.setdefault("audio", {}).setdefault("enabled_by_level", {})["roc_warning"] = False
+        target_patch = "winsound.Beep" if bm.winsound is not None else "subprocess.Popen"
+        with patch(f"battery_monitor.{target_patch}") as mock_sound:
+            bm.play_sound("roc_warning")
+            self.assertFalse(mock_sound.called)
+
+    def test_normal_discharge_no_threshold_alert(self):
+        battery = BatteryTuple(percent=60, secsleft=7200, power_plugged=False)
+        should_alert, msg, level = bm.check_battery_alerts_v2(battery)
+        self.assertFalse(should_alert)
+        self.assertIsNone(msg)
+        self.assertIsNone(level)
+
+
 if __name__ == '__main__':
     unittest.main()

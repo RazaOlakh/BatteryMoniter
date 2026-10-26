@@ -385,8 +385,8 @@ def load_settings() -> Dict[str, Any]:
             "hysteresis_band": 2,
             "smart_interval_v2": True,
             "ema_alpha": 0.3,
-            "roc_alert_enabled": True,
-            "roc_rate_percent_per_min": 0.7,
+            "roc_alert_enabled": False,
+            "roc_rate_percent_per_min": 2.0,
             "roc_min_window_min": 2,
             "low_critical": 20,
             "low_warning": 25,
@@ -413,6 +413,7 @@ def load_settings() -> Dict[str, Any]:
                 "high_notice": True,
                 "high_warning": True,
                 "high_critical": True,
+                "roc_warning": False,
             },
             "reduce_on_headphones": True,
             "headphones_reduction_factor": 0.6,
@@ -1195,7 +1196,7 @@ def run_monitoring(interval: int = 60):
             should_alert, alert_message, alert_level = check_battery_alerts_v2(battery)
 
             monitoring_cfg = app_settings.get("monitoring", {})
-            if monitoring_cfg.get("roc_alert_enabled", True) and not battery.power_plugged and len(rate_samples) >= 2:
+            if monitoring_cfg.get("roc_alert_enabled", False) and not battery.power_plugged and len(rate_samples) >= 2:
                 window_min = monitoring_cfg.get("roc_min_window_min", 2)
                 cutoff = current_ts - (window_min * 60)
                 points = [(t, p) for (t, p) in rate_samples if t >= cutoff]
@@ -1203,10 +1204,10 @@ def run_monitoring(interval: int = 60):
                     dt_min = (points[-1][0] - points[0][0]) / 60.0
                     if dt_min > 0.5:
                         rate_per_min = (points[0][1] - points[-1][1]) / dt_min
-                        if rate_per_min >= monitoring_cfg.get("roc_rate_percent_per_min", 0.7):
+                        if rate_per_min >= monitoring_cfg.get("roc_rate_percent_per_min", 2.0):
                             should_alert = True
                             alert_level = "roc_warning"
-                            alert_message = f"Rapid discharge detected (≈{rate_per_min:.2f}%/min). Consider plugging in."
+                            alert_message = f"Rapid discharge detected (-{rate_per_min:.2f}%/min). Consider plugging in."
 
             current_time = time.time()
             notifications_enabled = app_settings.get("notifications", {}).get("enabled", True)
@@ -1221,7 +1222,11 @@ def run_monitoring(interval: int = 60):
             hysteresis_band = monitoring_cfg.get("hysteresis_band", 2)
 
             allow_new_alert = True
-            if notification_frequency == "cooldown":
+            if alert_level == "roc_warning":
+                roc_cooldown = max(180, notification_cooldown_setting)
+                if current_time - last_time_for_level < roc_cooldown:
+                    allow_new_alert = False
+            elif notification_frequency == "cooldown":
                 if current_time - last_time_for_level < notification_cooldown_setting:
                     allow_new_alert = False
             elif notification_frequency == "once":
