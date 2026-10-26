@@ -610,7 +610,6 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def apply_theme(self, theme_key: str):
-        QFont = PySide6.QtGui.QFont if hasattr(PySide6.QtGui, 'QFont') else QFont
         QApplication.setStyle("Fusion")
         pal = QPalette()
         pal.setColor(QPalette.ColorRole.Window, QColor(31, 31, 31))
@@ -648,11 +647,11 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
     w = MainWindow()
     w.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

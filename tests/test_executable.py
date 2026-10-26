@@ -18,7 +18,9 @@ def test_executable():
     print("==================================================")
 
     project_root = Path(__file__).parent.parent
-    exe_path = project_root / "dist" / "HABatteryMonitor.exe"
+    exe_path = project_root / "dist" / "BatteryMonitor" / ("BatteryMonitor.exe" if sys.platform.startswith("win") else "BatteryMonitor")
+    if not exe_path.exists():
+        exe_path = project_root / "dist" / "HABatteryMonitor.exe"
 
     if not exe_path.exists():
         print(f"ℹ️ Executable not found at {exe_path}. Skipping binary smoke tests (build step required).")
