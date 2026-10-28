@@ -28,6 +28,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "check_interval": 60,
         "smart_interval": True,
         "min_interval": 10,
+        "roc_alert_enabled": True,
         "low_critical": 20,
         "low_warning": 25,
         "low_notice": 30,
@@ -363,6 +364,14 @@ class MainWindow(QMainWindow):
         gb_interval.setLayout(ly_interval)
         layout.addWidget(gb_interval)
 
+        gb_roc = QGroupBox("Rapid Discharge Detection")
+        ly_roc = QVBoxLayout(gb_roc)
+        self.roc_checkbox = QCheckBox("Enable Rapid Discharge Alert (Rate of Change)")
+        self.roc_checkbox.setChecked(bool(self.settings.get("monitoring", {}).get("roc_alert_enabled", True)))
+        ly_roc.addWidget(self.roc_checkbox)
+        gb_roc.setLayout(ly_roc)
+        layout.addWidget(gb_roc)
+
         gb_th = QGroupBox("Alert Thresholds")
         ly_th = QHBoxLayout(gb_th)
 
@@ -535,6 +544,7 @@ class MainWindow(QMainWindow):
         mon = self.settings.setdefault("monitoring", {})
         mon["check_interval"] = int(self.interval_slider.value())
         mon["smart_interval"] = bool(self.smart_checkbox.isChecked())
+        mon["roc_alert_enabled"] = bool(self.roc_checkbox.isChecked())
         mon["low_critical"] = int(self.low_critical.value())
         mon["low_warning"] = int(self.low_warning.value())
         mon["low_notice"] = int(self.low_notice.value())
@@ -610,7 +620,6 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def apply_theme(self, theme_key: str):
-        QFont = PySide6.QtGui.QFont if hasattr(PySide6.QtGui, 'QFont') else QFont
         QApplication.setStyle("Fusion")
         pal = QPalette()
         pal.setColor(QPalette.ColorRole.Window, QColor(31, 31, 31))
@@ -648,10 +657,26 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        w = MainWindow()
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        return app.exec()
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"Error starting Settings GUI:\n\n{err}", "HA Battery Monitor Error", 0x10)
+            except Exception:
+                pass
+        print(f"Error starting Settings GUI: {err}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

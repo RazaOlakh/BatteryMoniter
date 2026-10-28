@@ -5,8 +5,9 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtCore import Qt, QTimer
 
 BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
@@ -14,9 +15,55 @@ sys.path.insert(0, str(BASE_DIR))
 import battery_monitor as bm
 
 
+def create_qt_battery_icon(percent: int, is_charging: bool, has_error: bool = False) -> QIcon:
+    """Draw a crisp, high-DPI battery tray icon with percentage and charge indicator."""
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    if has_error:
+        fill_color = QColor(230, 50, 50)       # Red
+    elif is_charging:
+        fill_color = QColor(40, 190, 70)       # Green
+    elif percent <= 20:
+        fill_color = QColor(230, 50, 50)       # Red
+    elif percent <= 30:
+        fill_color = QColor(240, 140, 20)      # Orange
+    else:
+        fill_color = QColor(30, 140, 240)      # Bright Blue
+
+    # Battery body outline (rounded box)
+    painter.setPen(fill_color)
+    painter.setBrush(QColor(35, 35, 35, 230))
+    painter.drawRoundedRect(6, 12, 48, 32, 4, 4)
+
+    # Terminal cap on the right
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(fill_color)
+    painter.drawRoundedRect(54, 22, 6, 12, 2, 2)
+
+    # Fill level inside battery
+    fill_width = int((max(0, min(100, percent)) / 100.0) * 42)
+    if fill_width > 0:
+        painter.fillRect(9, 15, fill_width, 26, fill_color)
+
+    # Percentage text below battery body
+    painter.setPen(QColor(255, 255, 255))
+    font = QFont("Segoe UI", 9, QFont.Bold)
+    painter.setFont(font)
+    text = f"{percent}%"
+    painter.drawText(0, 44, 64, 20, Qt.AlignCenter, text)
+
+    painter.end()
+    return QIcon(pixmap)
+
+
 class TrayApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
         self.is_running = False
@@ -58,31 +105,22 @@ class TrayApp:
         self.menu.addAction(self.action_quit)
 
         self.tray.setContextMenu(self.menu)
-        self.tray.setToolTip("HA Battery Monitor")
-
-        # Set default icon
-        try:
-            self.tray.setIcon(QIcon.fromTheme("battery", self.app.style().standardIcon(getattr(self.app.style().StandardPixmap, 'SP_ComputerIcon', 0))))
-        except Exception:
-            pass
-
-        self.tray.activated.connect(self.on_tray_activated)
-        self.tray.show()
+        self.tray.setToolTip("HA Battery Monitor - Starting...")
 
         bm.load_settings()
 
-        if not bm.create_single_instance_check():
-            try:
-                self.tray.showMessage("HA Battery Monitor", "Already running.", QSystemTrayIcon.MessageIcon.Information, 3000)
-            except Exception:
-                pass
-            sys.exit(0)
+        # Fallback default icon before first battery check
+        self.tray.setIcon(create_qt_battery_icon(100, False, False))
 
-        try:
-            bm.update_tray_icon = lambda: None
-            bm.setup_tray = lambda: None
-        except Exception:
-            pass
+        # Initial icon display
+        self.update_tray_display()
+        self.tray.activated.connect(self.on_tray_activated)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.show()
+
+        # Connect battery_monitor tray updates directly to Qt
+        bm.update_tray_icon = self.update_tray_display
+        bm.setup_tray = lambda: None
 
         self.is_running = True
         self.monitor_thread = threading.Thread(
@@ -93,21 +131,42 @@ class TrayApp:
         self.monitor_thread.start()
         self.refresh_pause_label()
 
+        # Periodic refresh timer on Qt event loop (every 3 seconds)
+        self.ui_timer = QTimer()
+        self.ui_timer.timeout.connect(self.update_tray_display)
+        self.ui_timer.start(3000)
+
+    def update_tray_display(self):
+        """Update system tray icon, tooltip, and menu state from current battery status."""
+        try:
+            # Re-check visibility in case explorer.exe tray was not yet ready during initial boot
+            if not self.tray.isVisible() and QSystemTrayIcon.isSystemTrayAvailable():
+                self.tray.show()
+
+            battery = bm.check_battery_status()
+            if battery:
+                percent = int(battery.percent)
+                is_charging = battery.power_plugged
+                has_error = bm.last_error is not None
+                icon = create_qt_battery_icon(percent, is_charging, has_error)
+                self.tray.setIcon(icon)
+
+                status_text = f"Battery: {percent}% ({'Charging' if is_charging else 'Not Charging'})"
+                if bm.last_error:
+                    status_text += f"\nError: {bm.last_error}"
+                self.tray.setToolTip(status_text)
+            else:
+                self.tray.setToolTip("HA Battery Monitor - No battery detected")
+        except Exception:
+            pass
+
     def refresh_pause_label(self):
         paused = bm.app_settings.get("advanced", {}).get("paused", False)
         self.action_pause.setText("Resume Monitoring" if paused else "Pause Monitoring")
 
     def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            try:
-                battery = bm.check_battery_status()
-                if battery:
-                    msg = f"Battery: {battery.percent}% ({'Charging' if battery.power_plugged else 'Not Charging'})"
-                else:
-                    msg = "No battery detected"
-                self.tray.showMessage("HA Battery Monitor", msg, QSystemTrayIcon.MessageIcon.Information, 3000)
-            except Exception:
-                pass
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.open_settings()
 
     def check_now(self):
         try:
@@ -159,7 +218,15 @@ class TrayApp:
         try:
             import subprocess
             creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-            subprocess.Popen([sys.executable, str(BASE_DIR / "qt_gui.py")], creationflags=creationflags)
+            if getattr(sys, "frozen", False):
+                cmd = [sys.executable, "--settings"]
+            else:
+                launcher = BASE_DIR / "app_launcher.py"
+                if launcher.exists():
+                    cmd = [sys.executable, str(launcher), "--settings"]
+                else:
+                    cmd = [sys.executable, str(BASE_DIR / "qt_gui.py")]
+            subprocess.Popen(cmd, creationflags=creationflags)
         except Exception as e:
             self.tray.showMessage("HA Battery Monitor", f"Failed to open Settings: {e}", QSystemTrayIcon.MessageIcon.Critical, 3000)
 

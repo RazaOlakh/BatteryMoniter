@@ -52,19 +52,32 @@ pip install -r requirements.txt
 
 ### Usage
 
-#### Start Background Monitoring
+#### Start Background Monitoring (Automatic Background Detach)
 ```bash
 python src/app_launcher.py
 ```
+*Launches the monitoring service in the background and immediately frees the terminal. You can safely close the terminal without affecting the system tray icon.*
 
-#### Open Settings GUI Directly
+#### Silent Windows Startup Setup (Zero Console Window on Sign-in)
+- Run `setup_silent_startup.bat` (or enable **Start with Windows** in Settings).
+- Automatically configures Windows registry with `pythonw.exe` so **no terminal window ever opens on boot**.
+
+#### 100% Windowless Launchers (No Console Flash)
+- Double-click `start_background.vbs`
+- Or double-click `start_background.bat`
+- Or double-click `src/app_launcher.pyw`
+
+#### Foreground Console Mode & Debug Logging
 ```bash
-python src/app_launcher.py --settings
+python src/app_launcher.py --debug
+# Or:
+python src/app_launcher.py --console
 ```
 
-#### Custom Interval & Debug Logging
+#### Open Settings GUI Directly
+- Click the battery logo in the system tray, or:
 ```bash
-python src/app_launcher.py --interval 30 --debug
+python src/app_launcher.py --settings
 ```
 
 ---

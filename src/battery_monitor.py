@@ -2,12 +2,31 @@ import sys
 import os
 import time
 
+if sys.stdout is None:
+    try:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    except Exception:
+        pass
+if sys.stderr is None:
+    try:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    except Exception:
+        pass
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+# Ensure working directory is project root
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+try:
+    os.chdir(PROJECT_ROOT)
+except Exception:
+    pass
+
 import json
 import logging
 import argparse
@@ -66,14 +85,25 @@ def get_startup_file_path() -> Optional[Path]:
 def is_startup_enabled() -> bool:
     """Check if application is registered to run on system startup across Windows, Linux, macOS."""
     if os.name == "nt":
-        if winreg is None:
-            return False
+        reg_enabled = False
+        if winreg is not None:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
+                    winreg.QueryValueEx(key, REG_APP_NAME)
+                    reg_enabled = True
+            except (FileNotFoundError, OSError):
+                reg_enabled = False
+
+        vbs_enabled = False
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
-                winreg.QueryValueEx(key, REG_APP_NAME)
-                return True
-        except (FileNotFoundError, OSError):
-            return False
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                vbs_path = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "HABatteryMonitor.vbs"
+                vbs_enabled = vbs_path.exists()
+        except Exception:
+            pass
+
+        return reg_enabled or vbs_enabled
     else:
         path = get_startup_file_path()
         return path.exists() if path else False
@@ -81,7 +111,10 @@ def is_startup_enabled() -> bool:
 
 def set_startup_enabled(enable: bool) -> bool:
     """Enable or disable launching application on system startup across Windows, Linux, macOS."""
-    launcher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.py")
+    pyw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.pyw")
+    py_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.py")
+    launcher_path = pyw_path if os.path.exists(pyw_path) else py_path
+
     if os.name == "nt":
         if winreg is None:
             return False
@@ -91,14 +124,74 @@ def set_startup_enabled(enable: bool) -> bool:
                     if getattr(sys, "frozen", False):
                         cmd = f'"{sys.executable}"'
                     else:
-                        cmd = f'"{sys.executable}" "{launcher_path}"'
+                        python_bin = sys.executable
+                        dirname = os.path.dirname(python_bin)
+                        basename = os.path.basename(python_bin).lower()
+                        # Strictly use windowless Python so zero terminal window ever opens
+                        if basename == "python.exe" and os.path.exists(os.path.join(dirname, "pythonw.exe")):
+                            python_bin = os.path.join(dirname, "pythonw.exe")
+                        elif basename == "py.exe" and os.path.exists(os.path.join(dirname, "pyw.exe")):
+                            python_bin = os.path.join(dirname, "pyw.exe")
+                        elif not basename.endswith("w.exe"):
+                            cand = os.path.join(dirname, "pythonw.exe")
+                            if os.path.exists(cand):
+                                python_bin = cand
+                            else:
+                                which_w = shutil.which("pythonw.exe") or shutil.which("pythonw") or shutil.which("pyw.exe")
+                                if which_w:
+                                    python_bin = which_w
+                        if not os.path.basename(python_bin).lower().endswith("w.exe"):
+                            import glob
+                            for pattern in [r"C:\Python3*\pythonw.exe", os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python3*\pythonw.exe")]:
+                                matches = glob.glob(pattern)
+                                if matches and os.path.exists(matches[-1]):
+                                    python_bin = matches[-1]
+                                    break
+                        cmd = f'"{python_bin}" "{launcher_path}" --service'
                     winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
-                    log_message("Windows startup registry key registered", "INFO")
+                    log_message("Windows startup registry key registered (100% silent windowless)", "INFO")
+
+                    # Clear any disabled state from Windows Task Manager StartupApproved
+                    try:
+                        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run", 0, winreg.KEY_SET_VALUE) as sa_key:
+                            try:
+                                winreg.DeleteValue(sa_key, REG_APP_NAME)
+                            except (FileNotFoundError, OSError):
+                                pass
+                    except Exception:
+                        pass
+
+                    # Dual-channel startup: Also create silent launcher VBS in Windows Startup folder
+                    try:
+                        appdata = os.environ.get("APPDATA")
+                        if appdata:
+                            startup_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+                            if startup_dir.exists():
+                                vbs_path = startup_dir / "HABatteryMonitor.vbs"
+                                vbs_content = (
+                                    'Set WshShell = CreateObject("WScript.Shell")\r\n'
+                                    f'WshShell.Run """{python_bin}"" ""{launcher_path}"" --service", 0, False\r\n'
+                                    'Set WshShell = Nothing\r\n'
+                                )
+                                vbs_path.write_text(vbs_content, encoding="utf-8")
+                                log_message("Windows Startup folder VBS launcher registered", "INFO")
+                    except Exception as ve:
+                        log_message(f"Startup folder VBS registration notice: {ve}", "DEBUG")
                 else:
                     try:
                         winreg.DeleteValue(key, REG_APP_NAME)
                         log_message("Windows startup registry key removed", "INFO")
                     except FileNotFoundError:
+                        pass
+
+                    try:
+                        appdata = os.environ.get("APPDATA")
+                        if appdata:
+                            vbs_path = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "HABatteryMonitor.vbs"
+                            if vbs_path.exists():
+                                vbs_path.unlink()
+                                log_message("Windows Startup folder VBS launcher removed", "INFO")
+                    except Exception:
                         pass
             return True
         except Exception as e:
@@ -166,6 +259,89 @@ Categories=Utility;
             log_message(f"Failed to update Linux autostart desktop file: {e}", "ERROR")
             return False
     return False
+
+
+def check_and_repair_startup_registration() -> bool:
+    """Ensure Windows startup registration uses windowless pythonw.exe and matches configured state."""
+    global app_settings
+    if not app_settings:
+        load_settings()
+
+    start_configured = True
+    if app_settings and isinstance(app_settings, dict):
+        start_configured = bool(app_settings.get("advanced", {}).get("start_with_windows", True))
+
+    if os.name == "nt" and not getattr(sys, "frozen", False):
+        pyw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.pyw")
+        py_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_launcher.py")
+        launcher_path = pyw_path if os.path.exists(pyw_path) else py_path
+        current_dir = os.path.dirname(os.path.abspath(__file__)).lower()
+        needs_repair = False
+        reg_found = False
+
+        if winreg is not None:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_STARTUP_KEY, 0, winreg.KEY_READ) as key:
+                    val, _ = winreg.QueryValueEx(key, REG_APP_NAME)
+                    reg_found = True
+                    if isinstance(val, str):
+                        val_lower = val.lower()
+                        if (current_dir not in val_lower
+                                or ("app_launcher.py" not in val_lower and "app_launcher.pyw" not in val_lower)
+                                or "python.exe" in val_lower
+                                or "py.exe" in val_lower
+                                or "--service" not in val_lower):
+                            needs_repair = True
+            except (FileNotFoundError, OSError):
+                reg_found = False
+            except Exception:
+                pass
+
+        vbs_found = False
+        try:
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                vbs_path = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "HABatteryMonitor.vbs"
+                if vbs_path.exists():
+                    vbs_found = True
+                    vbs_text = vbs_path.read_text(encoding="utf-8", errors="ignore").lower()
+                    if current_dir not in vbs_text or "--service" not in vbs_text:
+                        needs_repair = True
+        except Exception:
+            pass
+
+        if start_configured:
+            # If not registered at all or needs repair, register windowless pythonw
+            if not reg_found or needs_repair:
+                return set_startup_enabled(True)
+        else:
+            if reg_found or vbs_found:
+                return set_startup_enabled(False)
+
+        if needs_repair:
+            return set_startup_enabled(True)
+    return False
+
+
+def ensure_interactive_desktop():
+    """No-op desktop check maintained for backward compatibility."""
+    pass
+
+
+def hide_and_detach_console():
+    """On Windows, hide and detach console window so closing any terminal does not affect the app."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+            null_out = open(os.devnull, "w", encoding="utf-8")
+            sys.stdout = null_out
+            sys.stderr = null_out
+            ctypes.windll.kernel32.FreeConsole()
+        except Exception:
+            pass
 
 
 BEEP_FREQUENCY = 1000
@@ -296,6 +472,17 @@ def cleanup_single_instance():
 
 def handle_already_running():
     """Handle the case when the application is already running."""
+    # When running as a background service or in headless/automated environment, exit quietly with zero UI
+    if (
+        "--service" in sys.argv
+        or "-s" in sys.argv
+        or os.environ.get("HEADLESS") == "1"
+        or "unittest" in sys.modules
+        or "pytest" in sys.modules
+    ):
+        log_message("Another instance of Battery Monitor Pro is already active. Exiting silently.", "INFO")
+        return
+
     try:
         if tk and messagebox:
             root = tk.Tk()
@@ -419,6 +606,7 @@ def load_settings() -> Dict[str, Any]:
         },
         "advanced": {
             "paused": False,
+            "start_with_windows": True,
         }
     }
 
@@ -457,22 +645,48 @@ def save_settings():
 
 
 def open_settings_gui(icon=None, item=None):
-    """Open the Qt (PySide6) settings GUI only (no fallback)."""
-    base_dir = Path(__file__).parent
-    qt_script = base_dir / "qt_gui.py"
+    """Open the Qt (PySide6) settings GUI."""
     try:
-        import importlib.util
-        pyside_spec = importlib.util.find_spec("PySide6")
-        if not qt_script.exists() or pyside_spec is None:
-            log_message("Qt GUI not available (qt_gui.py missing or PySide6 not installed)", "ERROR")
-            show_notification("Settings GUI unavailable: Install PySide6 to use the Qt Settings.", alert_level="warning")
-            return
+        is_frozen = getattr(sys, "frozen", False)
+        base_dir = Path(sys.executable).parent if is_frozen else Path(__file__).parent
+
+        # When running from Python source, verify PySide6 is installed
+        if not is_frozen:
+            import importlib.util
+            pyside_spec = importlib.util.find_spec("PySide6")
+            if pyside_spec is None:
+                err_msg = "PySide6 is required to open the Settings GUI.\n\nPlease install it using:\npip install PySide6"
+                log_message("Qt GUI not available (PySide6 not installed)", "ERROR")
+                show_notification("Settings GUI unavailable: Install PySide6 to use Qt Settings.", alert_level="warning")
+                if os.name == "nt" and "unittest" not in sys.modules and "--service" not in sys.argv:
+                    try:
+                        import ctypes
+                        ctypes.windll.user32.MessageBoxW(0, err_msg, "HA Battery Monitor", 0x30)
+                    except Exception:
+                        pass
+                return
+
+        # In frozen executable, pass --settings to the binary; in source, run app_launcher or qt_gui
+        if is_frozen:
+            cmd = [sys.executable, "--settings"]
+        else:
+            launcher = base_dir / "app_launcher.py"
+            if launcher.exists():
+                cmd = [sys.executable, str(launcher), "--settings"]
+            else:
+                cmd = [sys.executable, str(base_dir / "qt_gui.py")]
 
         creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-        subprocess.Popen([sys.executable, str(qt_script)], creationflags=creationflags)
+        subprocess.Popen(cmd, creationflags=creationflags)
         log_message("Qt Settings GUI launched", "INFO")
     except Exception as e:
         log_message(f"Error launching Qt settings GUI: {e}", "ERROR")
+        if os.name == "nt" and "unittest" not in sys.modules and "--service" not in sys.argv:
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"Error launching Settings GUI:\n\n{e}", "HA Battery Monitor", 0x10)
+            except Exception:
+                pass
 
 
 logging.basicConfig(
@@ -495,32 +709,43 @@ def log_message(message: str, level: str = "INFO"):
 
 
 def create_tray_image(percent: int, is_charging: bool, has_error: bool = False):
-    """Create a system tray icon showing battery percentage."""
+    """Create a system tray icon showing battery percentage with transparent background."""
     if Image is None or ImageDraw is None:
         return None
-    image = Image.new('RGB', (64, 64), color='white')
+    # Use RGBA for transparency so the icon looks natural on Windows taskbar
+    image = Image.new('RGBA', (64, 64), color=(0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
     if has_error:
-        color = 'red'
+        color = (230, 50, 50, 255)       # Red
     elif is_charging:
-        color = 'green'
+        color = (40, 190, 70, 255)       # Green
     elif percent <= 20:
-        color = 'red'
+        color = (230, 50, 50, 255)       # Red
     elif percent <= 30:
-        color = 'orange'
+        color = (240, 140, 20, 255)      # Orange
     else:
-        color = 'blue'
+        color = (30, 140, 240, 255)      # Bright Blue
 
-    draw.rectangle([10, 20, 50, 50], outline=color, width=2)
-    draw.rectangle([50, 25, 54, 35], fill=color)
+    # Battery body outline (rounded box)
+    # Background fill inside battery body for high contrast on both dark and light taskbars
+    draw.rounded_rectangle([6, 12, 54, 46], radius=4, fill=(40, 40, 40, 220), outline=color, width=3)
+    # Battery terminal tip on the right
+    draw.rounded_rectangle([54, 23, 60, 35], radius=2, fill=color)
 
-    fill_height = int((percent / 100) * 28)
-    if fill_height > 0:
-        draw.rectangle([12, 48 - fill_height, 48, 48], fill=color)
+    # Battery fill level inside the body
+    # Interior area: left=9, top=15, right=51, bottom=43. Width = 42
+    fill_width = int((max(0, min(100, percent)) / 100.0) * 42)
+    if fill_width > 0:
+        draw.rectangle([9, 15, 9 + fill_width, 43], fill=color)
 
+    # Percentage text below or centered
     text = f"{percent}%"
-    draw.text((16, 52), text, fill='black')
+    # Simple contrast text with white color and slight shadow
+    try:
+        draw.text((15, 48), text, fill=(255, 255, 255, 255))
+    except Exception:
+        pass
     return image
 
 
@@ -532,6 +757,7 @@ def update_tray_icon():
     try:
         battery = psutil.sensors_battery()
         if battery:
+            current_battery_percent = int(battery.percent)
             is_charging = battery.power_plugged
             has_error = last_error is not None
             icon_image = create_tray_image(current_battery_percent, is_charging, has_error)
@@ -638,7 +864,7 @@ def refresh_tray_menu():
             pystray.MenuItem("Show Status", lambda icon, item: show_status()),
             pystray.MenuItem(pause_label, toggle_pause_state),
             pystray.MenuItem(startup_label, toggle_startup_state),
-            pystray.MenuItem("Settings", open_settings_gui),
+            pystray.MenuItem("Settings", open_settings_gui, default=True),
             pystray.MenuItem("Quit", quit_app)
         )
         tray_icon.menu = new_menu
@@ -648,10 +874,24 @@ def refresh_tray_menu():
 
 def setup_tray():
     """Setup system tray icon with menu."""
-    global tray_icon
+    global tray_icon, current_battery_percent, current_status
     if pystray is None or Image is None:
         return
-    icon_image = create_tray_image(0, False)
+    
+    # Query current battery immediately so the icon shows accurate level from first render
+    initial_percent = 50
+    initial_charging = False
+    try:
+        if psutil:
+            b = psutil.sensors_battery()
+            if b:
+                initial_percent = int(b.percent)
+                initial_charging = b.power_plugged
+                current_battery_percent = initial_percent
+    except Exception:
+        pass
+
+    icon_image = create_tray_image(initial_percent, initial_charging)
     if icon_image is None:
         return
     is_startup = is_startup_enabled()
@@ -661,10 +901,11 @@ def setup_tray():
         pystray.MenuItem("Show Status", lambda icon, item: show_status()),
         pystray.MenuItem("Pause Monitoring", toggle_pause_state),
         pystray.MenuItem(startup_label, toggle_startup_state),
-        pystray.MenuItem("Settings", open_settings_gui),
+        pystray.MenuItem("Settings", open_settings_gui, default=True),
         pystray.MenuItem("Quit", quit_app)
     )
-    tray_icon = pystray.Icon("ha_battery_monitor", icon_image, "HA Battery Monitor - Starting...", menu)
+    status_str = f"Battery: {initial_percent}% ({'Charging' if initial_charging else 'Not Charging'})"
+    tray_icon = pystray.Icon("ha_battery_monitor", icon_image, status_str, menu)
 
 
 def check_battery_status():
@@ -1299,6 +1540,7 @@ def main(interval: int = 60, debug_mode: bool = False):
     verbose_logging = debug_mode
 
     load_settings()
+    check_and_repair_startup_registration()
     configured_interval = app_settings.get("monitoring", {}).get("check_interval", interval)
     if configured_interval:
         interval = configured_interval
@@ -1328,22 +1570,47 @@ def main(interval: int = 60, debug_mode: bool = False):
         handle_already_running()
         return
 
+    # Check if Qt (PySide6) tray is available for superior Windows system tray stability
+    use_qt_tray = False
     try:
-        setup_tray()
-        if tray_icon:
-            tray_thread = threading.Thread(target=tray_icon.run, daemon=True)
-            tray_thread.start()
-            time.sleep(0.2)
-            refresh_tray_menu()
-            log_message("System tray initialized successfully", "INFO")
-            log_message("Right-click tray icon for Settings and options", "INFO")
+        import qt_tray
+        use_qt_tray = True
+    except Exception:
+        use_qt_tray = False
+
+    if use_qt_tray:
+        log_message("Starting native Qt System Tray Engine...", "INFO")
+        try:
+            qt_tray.main()
+            return
+        except Exception as e:
+            log_message(f"Qt Tray startup failed ({e}), falling back to pystray...", "WARNING")
+
+    try:
+        tray_started = False
+        for attempt in range(3):
+            setup_tray()
+            if tray_icon:
+                try:
+                    tray_thread = threading.Thread(target=tray_icon.run, daemon=True)
+                    tray_thread.start()
+                    time.sleep(0.5)
+                    refresh_tray_menu()
+                    tray_started = True
+                    log_message("System tray initialized successfully", "INFO")
+                    log_message("Right-click tray icon for Settings and options", "INFO")
+                    break
+                except Exception as te:
+                    log_message(f"Tray startup attempt {attempt + 1} failed: {te}", "WARNING")
+                    time.sleep(2)
+        if not tray_started:
+            log_message("System tray could not be initialized after retries. Continuing background monitoring.", "WARNING")
     except ImportError as e:
         log_message(f"Missing dependency: {e}", "ERROR")
         log_message("Please install required packages: pip install pystray pillow", "ERROR")
         sys.exit(1)
     except Exception as e:
-        log_message(f"Failed to start application: {e}", "ERROR")
-        sys.exit(1)
+        log_message(f"Failed to setup tray: {e}", "ERROR")
 
     try:
         run_monitoring(interval=interval)
@@ -1393,20 +1660,29 @@ Modes:
     if args.settings:
         print("[BATTERY] HA Battery Monitor - Opening Settings GUI...")
         try:
-            from pathlib import Path
-            qt_path = Path(__file__).parent / "qt_gui.py"
-            if not qt_path.exists():
-                print(f"[ERROR] Error opening settings GUI: Qt GUI not found at {qt_path}")
-                sys.exit(1)
-            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-            proc = subprocess.Popen([sys.executable, str(qt_path)], creationflags=creationflags)
-            print("[SETTINGS] Settings GUI opened. Close the GUI window to exit.")
-            proc.wait()
-        except KeyboardInterrupt:
-            print("\n[DONE] Settings mode stopped by user.")
-        except Exception as e:
-            print(f"[ERROR] Error opening settings GUI: {e}")
+            import qt_gui
+            qt_gui.main()
+        except ImportError as e:
+            err_msg = f"PySide6 is required to open the Settings GUI.\n\nPlease install it using:\npip install PySide6\n\n(Details: {e})"
+            if os.name == "nt":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(0, err_msg, "HA Battery Monitor", 0x10)
+                except Exception:
+                    pass
+            print(f"[ERROR] Error opening settings GUI: {err_msg}")
             sys.exit(1)
+        except Exception as e:
+            err_msg = f"Error opening settings GUI: {e}"
+            if os.name == "nt":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(0, err_msg, "HA Battery Monitor", 0x10)
+                except Exception:
+                    pass
+            print(f"[ERROR] {err_msg}")
+            sys.exit(1)
+        sys.exit(0)
     else:
         if args.interval < 10:
             print("Error: Minimum interval is 10 seconds")
