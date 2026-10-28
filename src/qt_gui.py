@@ -34,6 +34,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "high_notice": 80,
         "high_warning": 85,
         "high_critical": 90,
+        "roc_alert_enabled": False,
+        "roc_rate_percent_per_min": 2.0,
+        "roc_min_window_min": 2,
     },
     "notifications": {
         "enabled": True,
@@ -53,6 +56,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "high_notice": True,
             "high_warning": True,
             "high_critical": True,
+            "roc_warning": False,
         },
         "reduce_on_headphones": True,
         "headphones_reduction_factor": 0.6,
@@ -417,6 +421,20 @@ class MainWindow(QMainWindow):
         gb_th.setLayout(ly_th)
 
         layout.addWidget(gb_th)
+
+        gb_roc = QGroupBox("Rapid Discharge Alert (Rate of Change)")
+        ly_roc = QHBoxLayout(gb_roc)
+        self.roc_checkbox = QCheckBox("Enable Rapid Discharge Alert")
+        self.roc_checkbox.setChecked(bool(self.settings.get("monitoring", {}).get("roc_alert_enabled", False)))
+        self.roc_rate = QSpinBox()
+        self.roc_rate.setRange(1, 10)
+        self.roc_rate.setValue(int(self.settings.get("monitoring", {}).get("roc_rate_percent_per_min", 2.0)))
+        ly_roc.addWidget(self.roc_checkbox)
+        ly_roc.addWidget(QLabel("Discharge threshold (%/min):"))
+        ly_roc.addWidget(self.roc_rate)
+        gb_roc.setLayout(ly_roc)
+        layout.addWidget(gb_roc)
+
         layout.addStretch(1)
 
     def _init_notifications(self):
@@ -521,9 +539,12 @@ class MainWindow(QMainWindow):
         self.chk_high_warning.setChecked(bool(ebl.get("high_warning", True)))
         self.chk_high_critical = QCheckBox("High Critical")
         self.chk_high_critical.setChecked(bool(ebl.get("high_critical", True)))
+        self.chk_roc_warning = QCheckBox("Rapid Discharge Warning (ROC)")
+        self.chk_roc_warning.setChecked(bool(ebl.get("roc_warning", False)))
 
         for w in (self.chk_notice_low, self.chk_warning_low, self.chk_critical_low,
-                  self.chk_high_notice, self.chk_high_warning, self.chk_high_critical):
+                  self.chk_high_notice, self.chk_high_warning, self.chk_high_critical,
+                  self.chk_roc_warning):
             ll.addWidget(w)
         gb_levels.setLayout(ll)
         layout.addWidget(gb_levels)
@@ -541,6 +562,8 @@ class MainWindow(QMainWindow):
         mon["high_notice"] = int(self.high_notice.value())
         mon["high_warning"] = int(self.high_warning.value())
         mon["high_critical"] = int(self.high_critical.value())
+        mon["roc_alert_enabled"] = bool(self.roc_checkbox.isChecked())
+        mon["roc_rate_percent_per_min"] = float(self.roc_rate.value())
 
         notif = self.settings.setdefault("notifications", {})
         notif["enabled"] = bool(self.notif_enabled.isChecked())
@@ -563,6 +586,7 @@ class MainWindow(QMainWindow):
             "high_notice": bool(self.chk_high_notice.isChecked()),
             "high_warning": bool(self.chk_high_warning.isChecked()),
             "high_critical": bool(self.chk_high_critical.isChecked()),
+            "roc_warning": bool(self.chk_roc_warning.isChecked()),
         }
 
         save_settings(self.settings)
