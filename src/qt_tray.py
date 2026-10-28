@@ -157,9 +157,7 @@ class TrayApp:
 
     def open_settings(self):
         try:
-            import subprocess
-            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-            subprocess.Popen([sys.executable, str(BASE_DIR / "qt_gui.py")], creationflags=creationflags)
+            bm.open_settings_gui()
         except Exception as e:
             self.tray.showMessage("HA Battery Monitor", f"Failed to open Settings: {e}", QSystemTrayIcon.MessageIcon.Critical, 3000)
 

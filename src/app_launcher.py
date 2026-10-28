@@ -59,21 +59,11 @@ Version: 2.0 Enhanced Edition
     if args.settings:
         print("🔋 Battery Monitor Pro - Opening Settings (Qt)...")
         try:
-            from pathlib import Path as _Path
-            import subprocess as _subprocess
-            import sys as _sys
-
-            qt_path = _Path(__file__).parent / "qt_gui.py"
-            if not qt_path.exists():
-                print("❌ Qt GUI not found: qt_gui.py")
-                _sys.exit(1)
-
-            creationflags = getattr(_subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
-            proc = _subprocess.Popen([_sys.executable, str(qt_path)], creationflags=creationflags)
-            print("✅ Qt Settings launched. Close the window to exit.")
-            proc.wait()
+            import qt_gui
+            sys.exit(qt_gui.main())
         except KeyboardInterrupt:
             print("\n✅ Settings closed by user.")
+            sys.exit(0)
         except Exception as e:
             print(f"❌ Error launching Qt Settings: {e}")
             sys.exit(1)
